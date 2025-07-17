@@ -47,6 +47,7 @@ from .routes.search import router as search_router
 from .routes.security import router as security_router
 from .routes.suggestions import router as suggestions_router
 from .routes.synthesis import router as synthesis_router
+from .routes.trading_data import router as trading_data_router
 from .routes.webhooks import router as webhooks_router
 
 logger = get_logger(__name__)
@@ -288,6 +289,8 @@ def _setup_routes(app: FastAPI):
     app.include_router(prediction_router, prefix="/v1/prediction", tags=["prediction"])
     
     app.include_router(security_router, prefix="/v1/security", tags=["security"])
+    
+    app.include_router(trading_data_router, tags=["trading-data"])  # Already has /v1/trading prefix
 
     # Add dashboard as sub-application
     try:

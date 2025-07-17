@@ -50,6 +50,7 @@ from ..suggestions.related.local_suggester import LocalSuggester
 from ..suggestions.connections.local_connector import LocalConnector
 from ..suggestions.organization.local_recommender import LocalRecommender
 from ..suggestions.gaps.local_detector import LocalDetector
+from ..agents.websearch_agent import WebSearchAgent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -97,6 +98,9 @@ class TyraMemoryServer:
         self.local_connector: Optional[LocalConnector] = None
         self.local_recommender: Optional[LocalRecommender] = None
         self.local_detector: Optional[LocalDetector] = None
+        
+        # Web search agent
+        self.web_search_agent: Optional[WebSearchAgent] = None
 
         # Server state
         self._initialized = False
@@ -548,6 +552,42 @@ class TyraMemoryServer:
                         "required": [],
                     },
                 ),
+                Tool(
+                    name="web_search",
+                    description="Perform local web search with content extraction and memory integration",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query for web search",
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Maximum number of search results to process",
+                                "default": 5,
+                                "minimum": 1,
+                                "maximum": 20,
+                            },
+                            "store_in_memory": {
+                                "type": "boolean",
+                                "description": "Whether to store results in memory system",
+                                "default": True,
+                            },
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent ID for memory storage",
+                                "default": "tyra",
+                            },
+                            "force_refresh": {
+                                "type": "boolean",
+                                "description": "Force new search even if similar content exists",
+                                "default": False,
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -596,6 +636,8 @@ class TyraMemoryServer:
                     result = await self._handle_recommend_memory_organization(arguments)
                 elif name == "detect_knowledge_gaps":
                     result = await self._handle_detect_knowledge_gaps(arguments)
+                elif name == "web_search":
+                    result = await self._handle_web_search(arguments)
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -746,6 +788,24 @@ class TyraMemoryServer:
                     logger.warning(f"Failed to initialize some suggestions components: {e}")
             else:
                 logger.warning("Embedding provider not available, suggestions features disabled")
+            
+            # Initialize web search agent
+            if self.memory_manager.embedding_provider:
+                try:
+                    self.web_search_agent = WebSearchAgent(
+                        vllm_client=self.vllm_client,
+                        embedder=self.memory_manager.embedding_provider,
+                        pgvector_handler=self.memory_manager.postgres_handler if hasattr(self.memory_manager, 'postgres_handler') else None,
+                        neo4j_linker=self.memory_manager.graph_handler if hasattr(self.memory_manager, 'graph_handler') else None,
+                        max_results=10,
+                        similarity_threshold=0.75
+                    )
+                    logger.info("Initialized WebSearchAgent successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize WebSearchAgent: {e}")
+                    self.web_search_agent = None
+            else:
+                logger.warning("Embedding provider not available, web search features disabled")
             
             # Initialize crawl4ai runner
             try:
@@ -1853,6 +1913,64 @@ class TyraMemoryServer:
             
         except Exception as e:
             logger.error("Knowledge gaps detection failed", arguments=arguments, error=str(e))
+            raise
+
+    async def _handle_web_search(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle web search requests."""
+        try:
+            if not self.web_search_agent:
+                return {
+                    "success": False,
+                    "error": "Web search agent not initialized",
+                }
+            
+            query = arguments["query"]
+            max_results = arguments.get("max_results", 5)
+            force_refresh = arguments.get("force_refresh", False)
+            agent_id = arguments.get("agent_id", "tyra")
+            store_in_memory = arguments.get("store_in_memory", True)
+            
+            # Perform web search and integration
+            search_results = await self.web_search_agent.search_and_integrate(
+                query=query,
+                max_results=max_results,
+                force_refresh=force_refresh
+            )
+            
+            # Format results for response
+            formatted_results = []
+            for result in search_results:
+                formatted_result = {
+                    "title": result.title,
+                    "source": result.source,
+                    "content_preview": result.text[:500] + "..." if len(result.text) > 500 else result.text,
+                    "summary": result.summary,
+                    "confidence_score": result.confidence_score,
+                    "relevance_score": result.relevance_score,
+                    "freshness_score": result.freshness_score,
+                    "extraction_method": result.extraction_method.value,
+                    "extraction_quality": result.extraction_quality.value,
+                    "content_length": result.processed_length,
+                    "timestamp": result.timestamp.isoformat(),
+                }
+                formatted_results.append(formatted_result)
+            
+            # Get search statistics
+            search_stats = await self.web_search_agent.get_search_stats()
+            
+            return {
+                "success": True,
+                "query": query,
+                "results": formatted_results,
+                "total_results": len(formatted_results),
+                "stored_in_memory": store_in_memory,
+                "agent_id": agent_id,
+                "search_statistics": search_stats,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            
+        except Exception as e:
+            logger.error("Web search failed", arguments=arguments, error=str(e))
             raise
 
     async def run(self) -> None:

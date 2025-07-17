@@ -1,3 +1,4 @@
+
 # 🔧 Claude: Update INSTALLATION.md for Embedding, Reranking, and Cross-Encoder Models
 
 You are instructed to **update the INSTALLATION.md file** for the Tyra MCP project to reflect **explicit user-driven model downloads** and to ensure full, correct installation steps for:
